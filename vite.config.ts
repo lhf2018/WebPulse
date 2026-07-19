@@ -13,6 +13,7 @@ export default defineConfig({
       input: {
         popup: resolve(__dirname, "popup.html"),
         dashboard: resolve(__dirname, "dashboard.html"),
+        site: resolve(__dirname, "site.html"),
         achievements: resolve(__dirname, "achievements.html"),
         options: resolve(__dirname, "options.html"),
         background: resolve(__dirname, "src/background/index.ts")

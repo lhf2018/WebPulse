@@ -34,7 +34,6 @@ export const CATEGORY_COLORS: Record<CategoryId, string> = {
 export interface Settings {
   theme: ThemeMode;
   locale: LocaleMode;
-  idleThresholdSec: number;
   dashboardDefaultRange: DashboardRange;
 }
 
@@ -52,8 +51,6 @@ export interface ActiveContext {
   category: CategoryId;
   startedAt: number;
   lastCheckpointAt: number;
-  focused: boolean;
-  idleState: "active" | "idle" | "locked";
 }
 
 export interface UsageWindow {
@@ -165,8 +162,19 @@ export interface PeriodReport {
   avgDailyActiveMs: number;
   topDomain?: string;
   topDomainActiveMs?: number;
+  topDomainActiveVisitCount?: number;
+  topDomainOpenVisitCount?: number;
+  topCategory?: CategoryId;
+  topCategoryActiveMs?: number;
+  peakDateKey?: string;
+  peakDateActiveMs?: number;
   peakHour?: number;
   changePercent?: number;
+  activeCoveragePercent: number;
+  categoryBreakdown: Array<{
+    category: CategoryId;
+    totalActiveMs: number;
+  }>;
   highlights: string[];
 }
 

@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { getDashboardPayload, getSettings } from "../shared/api";
 import { DEFAULT_SETTINGS } from "../shared/constants";
 import { applyTheme } from "../shared/theme";
+import { CATEGORY_COLORS, CATEGORY_LABELS } from "../shared/types";
 import type { DashboardPayload, DashboardRange, PeriodReport, TimelineEntry, TrendInsight } from "../shared/types";
 import { formatDuration, parseDateKey } from "../shared/time";
 import { ActionButton, MetricCard, PageShell, RangeTabs, SectionCard } from "../ui/components";
@@ -48,6 +49,21 @@ function timelineWidth(entry: TimelineEntry, maxMs: number) {
   return Math.max(8, (entry.totalActiveMs / Math.max(1, maxMs)) * 100);
 }
 
+function siteUrl(domain: string, range: DashboardRange) {
+  const url = new URL(chrome.runtime.getURL("site.html"));
+  url.searchParams.set("domain", domain);
+  url.searchParams.set("range", range);
+  return url.toString();
+}
+
+function openSite(domain: string, range: DashboardRange) {
+  return chrome.tabs.create({ url: siteUrl(domain, range) });
+}
+
+function categoryWidth(total: number, max: number) {
+  return `${Math.max(10, (total / Math.max(1, max)) * 100)}%`;
+}
+
 function toCsv(payload: DashboardPayload) {
   const headA = "dateKey,totalActiveMs,uniqueDomainCount,openedTabCount";
   const rowsA = payload.summaryRows.map(
@@ -84,6 +100,10 @@ function downloadText(name: string, text: string, type: string) {
 
 function ReportCard({ report }: { report: PeriodReport }) {
   const change = report.changePercent ?? 0;
+  const detailRange: DashboardRange = report.id === "weekly" ? "week" : "month";
+  const topCategory = report.topCategory ? CATEGORY_LABELS[report.topCategory] : "暂无";
+  const categoryBreakdown = report.categoryBreakdown.slice(0, 4);
+  const categoryMax = Math.max(1, ...categoryBreakdown.map((item) => item.totalActiveMs));
   return (
     <div className="report-card">
       <div className="report-head">
@@ -115,6 +135,47 @@ function ReportCard({ report }: { report: PeriodReport }) {
           <span>日均</span>
           <strong>{formatDuration(report.avgDailyActiveMs)}</strong>
         </div>
+      </div>
+      <div className="report-focus-grid">
+        <button
+          type="button"
+          className="report-focus-card"
+          onClick={() => report.topDomain && void openSite(report.topDomain, detailRange)}
+          disabled={!report.topDomain}
+        >
+          <span>主站点</span>
+          <strong>{report.topDomain ?? "暂无"}</strong>
+          <small>{formatDuration(report.topDomainActiveMs ?? 0)}</small>
+        </button>
+        <div className="report-focus-card">
+          <span>主分类</span>
+          <strong>{topCategory}</strong>
+          <small>{formatDuration(report.topCategoryActiveMs ?? 0)}</small>
+        </div>
+        <div className="report-focus-card">
+          <span>高峰日</span>
+          <strong>{report.peakDateKey ?? "暂无"}</strong>
+          <small>{formatDuration(report.peakDateActiveMs ?? 0)}</small>
+        </div>
+        <div className="report-focus-card">
+          <span>覆盖率</span>
+          <strong>{report.activeCoveragePercent}%</strong>
+          <small>有记录天数占周期</small>
+        </div>
+      </div>
+      <div className="report-category-stack">
+        {categoryBreakdown.map((item) => (
+          <div className="report-category-row" key={item.category}>
+            <span>
+              <i style={{ backgroundColor: CATEGORY_COLORS[item.category] }} />
+              {CATEGORY_LABELS[item.category]}
+            </span>
+            <div className="report-category-bar">
+              <b style={{ width: categoryWidth(item.totalActiveMs, categoryMax) }} />
+            </div>
+            <strong>{formatDuration(item.totalActiveMs)}</strong>
+          </div>
+        ))}
       </div>
       <div className="report-highlights">
         {report.highlights.map((item) => (
@@ -224,218 +285,246 @@ function DashboardApp() {
         </>
       }
     >
-      <div className="history-top-grid">
-        <SectionCard title="本地永久存储" subtitle="不会主动按天数清理历史记录">
-          <div className="status-banner refined">
-            <div>
-              <strong>追踪已自动开启</strong>
-              <small>
-                范围：{rangeText}，{payload.startDateKey} 至 {payload.endDateKey}
-              </small>
-            </div>
-            <div className="status-number">
-              <span>记录天数</span>
-              <strong>{payload.summaryRows.length}</strong>
-            </div>
-          </div>
-        </SectionCard>
-
-        <SectionCard title="历史总览" subtitle="当前范围内的聚合结果">
-          <div className="metric-grid">
-            <MetricCard label="累计活跃时长" value={formatDuration(payload.totals.totalActiveMs)} tone="blue" />
-            <MetricCard label="访问站点数" value={`${payload.totals.uniqueDomainCount}`} tone="mint" />
-            <MetricCard label="新标签页" value={`${payload.totals.openedTabCount}`} tone="amber" />
-            <MetricCard label="日均活跃" value={formatDuration(averageDaily)} tone="rose" />
-          </div>
-        </SectionCard>
-
-        <SectionCard title="成长等级" subtitle={`${unlockedCount}/${payload.profile.achievements.length} 个成就已解锁`}>
-          <div className="level-panel">
-            <div className="level-orb large">
-              <span>Lv</span>
-              <strong>{payload.profile.level}</strong>
-            </div>
-            <div className="level-info">
-              <strong>{payload.profile.levelTitle}</strong>
-              <small>
-                {payload.profile.xp} XP / 下一级 {payload.profile.nextLevelXp} XP
-              </small>
-              <div className="xp-bar">
-                <span style={{ width: `${payload.profile.progress * 100}%` }} />
+      <div className="dashboard-stack">
+        <div className="dashboard-overview-grid">
+          <SectionCard title="当前范围" subtitle="本地记录状态" className="dashboard-status-card">
+            <div className="status-banner refined">
+              <div>
+                <strong>追踪已自动开启</strong>
+                <small>
+                  {rangeText}，{payload.startDateKey} 至 {payload.endDateKey}
+                </small>
+              </div>
+              <div className="status-number">
+                <span>记录天数</span>
+                <strong>{payload.summaryRows.length}</strong>
               </div>
             </div>
-          </div>
-          <div className="time-pair">
-            <div>
-              <span>最早使用</span>
-              <strong>{formatDateTime(payload.profile.usageWindow.firstUsedAt)}</strong>
-              <small>{payload.profile.usageWindow.firstDomain ?? "暂无"}</small>
-            </div>
-            <div>
-              <span>最晚使用</span>
-              <strong>{formatDateTime(payload.profile.usageWindow.lastUsedAt)}</strong>
-              <small>{payload.profile.usageWindow.lastDomain ?? "暂无"}</small>
-            </div>
-          </div>
-        </SectionCard>
-      </div>
+          </SectionCard>
 
-      <div className="dashboard-wide-grid">
-        <SectionCard title="趋势洞察" subtitle="自动比较近 7 天、本月和历史高峰" className="span-2">
-          <div className="insight-grid">
-            {payload.insights.map((insight: TrendInsight) => (
-              <div className={`insight-card tone-${insight.tone}`} key={insight.id}>
-                <span>{insightToneLabel(insight.tone)}</span>
-                <strong>{insight.value}</strong>
-                <b>{insight.title}</b>
-                <small>{insight.description}</small>
+          <SectionCard title="历史总览" subtitle="当前范围内的聚合结果" className="dashboard-metrics-card">
+            <div className="metric-grid">
+              <MetricCard label="累计活跃时长" value={formatDuration(payload.totals.totalActiveMs)} tone="blue" />
+              <MetricCard label="访问站点数" value={`${payload.totals.uniqueDomainCount}`} tone="mint" />
+              <MetricCard label="新标签页" value={`${payload.totals.openedTabCount}`} tone="amber" />
+              <MetricCard label="日均活跃" value={formatDuration(averageDaily)} tone="rose" />
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="成长等级"
+            subtitle={`${unlockedCount}/${payload.profile.achievements.length} 个成就已解锁`}
+            className="dashboard-level-card"
+          >
+            <div className="level-panel">
+              <div className="level-orb large">
+                <span>Lv</span>
+                <strong>{payload.profile.level}</strong>
               </div>
-            ))}
-          </div>
-        </SectionCard>
+              <div className="level-info">
+                <strong>{payload.profile.levelTitle}</strong>
+                <small>
+                  {payload.profile.xp} XP / 下一级 {payload.profile.nextLevelXp} XP
+                </small>
+                <div className="xp-bar">
+                  <span style={{ width: `${payload.profile.progress * 100}%` }} />
+                </div>
+              </div>
+            </div>
+            <div className="time-pair">
+              <div>
+                <span>最早使用</span>
+                <strong>{formatDateTime(payload.profile.usageWindow.firstUsedAt)}</strong>
+                <small>{payload.profile.usageWindow.firstDomain ?? "暂无"}</small>
+              </div>
+              <div>
+                <span>最晚使用</span>
+                <strong>{formatDateTime(payload.profile.usageWindow.lastUsedAt)}</strong>
+                <small>{payload.profile.usageWindow.lastDomain ?? "暂无"}</small>
+              </div>
+            </div>
+          </SectionCard>
+        </div>
 
-        <SectionCard title="周报 / 月报" subtitle="滚动 7 天与本月的本地总结">
-          <div className="report-stack">
-            <ReportCard report={payload.reports.weekly} />
-            <ReportCard report={payload.reports.monthly} />
-          </div>
-        </SectionCard>
-      </div>
-
-      <div className="history-layout">
-        <SectionCard title="历史日期" subtitle="点击任意一天查看明细" className="history-days">
-          {latestFirst.length ? (
-            <div className="day-list">
-              {latestFirst.map((row) => (
-                <button
-                  type="button"
-                  className={`day-button ${row.dateKey === selectedDate ? "active" : ""}`}
-                  key={row.dateKey}
-                  onClick={() => setSelectedDate(row.dateKey)}
-                >
-                  <span>
-                    <strong>{formatDay(row.dateKey)}</strong>
-                    <small>{row.dateKey}</small>
-                  </span>
-                  <b>{formatDuration(row.totalActiveMs)}</b>
-                  <i style={{ width: `${(row.totalActiveMs / maxDayMs) * 100}%` }} />
-                </button>
+        <div className="dashboard-analysis-grid">
+          <SectionCard title="趋势洞察" subtitle="自动比较近 7 天、本月和历史高峰" className="dashboard-insight-section">
+            <div className="insight-grid">
+              {payload.insights.map((insight: TrendInsight) => (
+                <div className={`insight-card tone-${insight.tone}`} key={insight.id}>
+                  <span>{insightToneLabel(insight.tone)}</span>
+                  <strong>{insight.value}</strong>
+                  <b>{insight.title}</b>
+                  <small>{insight.description}</small>
+                </div>
               ))}
             </div>
-          ) : (
-            <div className="empty-state">还没有历史记录。浏览网页后这里会按天展示。</div>
-          )}
-        </SectionCard>
+          </SectionCard>
 
-        <SectionCard
-          title={selectedDate ? `${selectedDate} 详细信息` : "单日详细信息"}
-          subtitle="当天指标、最早/最晚使用和 24 小时活跃节奏"
-          className="day-detail-panel span-2"
-        >
-          {selectedSummary ? (
-            <div className="day-detail-stack">
-              <div className="metric-grid day-metrics">
-                <MetricCard label="当天活跃" value={formatDuration(selectedSummary.totalActiveMs)} tone="blue" />
-                <MetricCard label="当天站点" value={`${selectedSummary.uniqueDomainCount}`} tone="mint" />
-                <MetricCard label="新标签页" value={`${selectedSummary.openedTabCount}`} tone="amber" />
-                <MetricCard
-                  label="单站平均"
-                  value={formatDuration(
-                    selectedSummary.uniqueDomainCount
-                      ? Math.round(selectedSummary.totalActiveMs / selectedSummary.uniqueDomainCount)
-                      : 0
-                  )}
-                  tone="rose"
-                />
-              </div>
-              <div className="time-pair day-window">
-                <div>
-                  <span>当天最早使用</span>
-                  <strong>{formatTime(selectedWindow.firstUsedAt)}</strong>
-                  <small>{selectedWindow.firstDomain ?? "暂无"}</small>
-                </div>
-                <div>
-                  <span>当天最晚使用</span>
-                  <strong>{formatTime(selectedWindow.lastUsedAt)}</strong>
-                  <small>{selectedWindow.lastDomain ?? "暂无"}</small>
-                </div>
-              </div>
-              <RhythmBars values={selectedSummary.activeHourBuckets} />
+          <SectionCard title="周报 / 月报" subtitle="滚动 7 天与本月的本地总结" className="dashboard-report-section">
+            <div className="report-stack">
+              <ReportCard report={payload.reports.weekly} />
+              <ReportCard report={payload.reports.monthly} />
             </div>
-          ) : (
-            <div className="empty-state">选择左侧日期后查看当天细节。</div>
-          )}
-        </SectionCard>
+          </SectionCard>
+        </div>
 
-        <SectionCard title="时间轴回放" subtitle="按当天站点首次出现时间排序" className="span-2">
-          {selectedTimeline.length ? (
-            <div className="timeline-list">
-              {selectedTimeline.map((entry) => (
-                <div className="timeline-row" key={`${entry.dateKey}-${entry.domain}-${entry.startAt}`}>
-                  <time>{formatTime(entry.startAt)}</time>
-                  <div className="timeline-dot" />
-                  <div className="timeline-content">
-                    <div>
-                      <strong>{entry.domain}</strong>
-                      <small>
-                        {formatTime(entry.startAt)} - {formatTime(entry.endAt)} / {entry.activeVisitCount} 次活跃
-                      </small>
-                    </div>
-                    <b>{formatDuration(entry.totalActiveMs)}</b>
-                    <span className="timeline-meter">
-                      <i style={{ width: `${timelineWidth(entry, maxTimelineMs)}%` }} />
+        <div className="dashboard-day-grid">
+          <SectionCard title="历史日期" subtitle="选择一天查看当天详情" className="history-days dashboard-fixed-card">
+            {latestFirst.length ? (
+              <div className="day-list">
+                {latestFirst.map((row) => (
+                  <button
+                    type="button"
+                    className={`day-button ${row.dateKey === selectedDate ? "active" : ""}`}
+                    key={row.dateKey}
+                    onClick={() => setSelectedDate(row.dateKey)}
+                  >
+                    <span>
+                      <strong>{formatDay(row.dateKey)}</strong>
+                      <small>{row.dateKey}</small>
                     </span>
+                    <b>{formatDuration(row.totalActiveMs)}</b>
+                    <i style={{ width: `${(row.totalActiveMs / maxDayMs) * 100}%` }} />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">还没有历史记录。浏览网页后这里会按天展示。</div>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title={selectedDate ? `${selectedDate} 详细信息` : "单日详细信息"}
+            subtitle="当天指标、最早/最晚使用和 24 小时活跃节奏"
+            className="day-detail-panel dashboard-fixed-card"
+          >
+            {selectedSummary ? (
+              <div className="day-detail-stack">
+                <div className="metric-grid day-metrics">
+                  <MetricCard label="当天活跃" value={formatDuration(selectedSummary.totalActiveMs)} tone="blue" />
+                  <MetricCard label="当天站点" value={`${selectedSummary.uniqueDomainCount}`} tone="mint" />
+                  <MetricCard label="新标签页" value={`${selectedSummary.openedTabCount}`} tone="amber" />
+                  <MetricCard
+                    label="单站平均"
+                    value={formatDuration(
+                      selectedSummary.uniqueDomainCount
+                        ? Math.round(selectedSummary.totalActiveMs / selectedSummary.uniqueDomainCount)
+                        : 0
+                    )}
+                    tone="rose"
+                  />
+                </div>
+                <div className="time-pair day-window">
+                  <div>
+                    <span>当天最早使用</span>
+                    <strong>{formatTime(selectedWindow.firstUsedAt)}</strong>
+                    <small>{selectedWindow.firstDomain ?? "暂无"}</small>
+                  </div>
+                  <div>
+                    <span>当天最晚使用</span>
+                    <strong>{formatTime(selectedWindow.lastUsedAt)}</strong>
+                    <small>{selectedWindow.lastDomain ?? "暂无"}</small>
                   </div>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">当天暂无可回放的站点时间轴。</div>
-          )}
-        </SectionCard>
+                <RhythmBars values={selectedSummary.activeHourBuckets} />
+              </div>
+            ) : (
+              <div className="empty-state">选择左侧日期后查看当天细节。</div>
+            )}
+          </SectionCard>
+        </div>
 
-        <SectionCard title="当天站点明细" subtitle="按停留时长排序" className="span-2">
-          {selectedDomainRows.length ? (
-            <div className="site-detail-table">
-              {selectedDomainRows.map((row, index) => (
-                <div className="site-detail-row" key={row.id}>
-                  <span>#{index + 1}</span>
-                  <strong>{row.domain}</strong>
-                  <small>
-                    {row.activeVisitCount} 次活跃 / {row.openVisitCount} 次打开
-                  </small>
-                  <b>{formatDuration(row.totalActiveMs)}</b>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">当天暂无站点明细。</div>
-          )}
-        </SectionCard>
+        <div className="dashboard-detail-grid">
+          <SectionCard title="时间轴回放" subtitle="按当天站点首次出现时间排序" className="dashboard-fixed-card">
+            {selectedTimeline.length ? (
+              <div className="timeline-list">
+                {selectedTimeline.map((entry) => (
+                  <div className="timeline-row" key={`${entry.dateKey}-${entry.domain}-${entry.startAt}`}>
+                    <time>{formatTime(entry.startAt)}</time>
+                    <div className="timeline-dot" />
+                    <button
+                      type="button"
+                      className="timeline-content timeline-button"
+                      onClick={() => void openSite(entry.domain, range)}
+                    >
+                      <div>
+                        <strong>{entry.domain}</strong>
+                        <small>
+                          {formatTime(entry.startAt)} - {formatTime(entry.endAt)} / {entry.activeVisitCount} 次活跃
+                        </small>
+                      </div>
+                      <b>{formatDuration(entry.totalActiveMs)}</b>
+                      <span className="timeline-meter">
+                        <i style={{ width: `${timelineWidth(entry, maxTimelineMs)}%` }} />
+                      </span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">当天暂无可回放的站点时间轴。</div>
+            )}
+          </SectionCard>
 
-        <SectionCard title="历史趋势" subtitle="按天聚合的活跃时长">
-          {payload.charts.dailySeries.length ? (
-            <Sparkline values={payload.charts.dailySeries.map((item) => item.value)} />
-          ) : (
-            <div className="empty-state">暂无趋势数据。</div>
-          )}
-        </SectionCard>
+          <SectionCard title="当天站点明细" subtitle="按停留时长排序" className="dashboard-fixed-card">
+            {selectedDomainRows.length ? (
+              <div className="site-detail-table">
+                {selectedDomainRows.map((row, index) => (
+                  <button
+                    type="button"
+                    className="site-detail-row site-detail-button"
+                    key={row.id}
+                    onClick={() => void openSite(row.domain, range)}
+                  >
+                    <span>#{index + 1}</span>
+                    <strong>{row.domain}</strong>
+                    <small>
+                      {row.activeVisitCount} 次活跃 / {row.openVisitCount} 次打开
+                    </small>
+                    <b>{formatDuration(row.totalActiveMs)}</b>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">当天暂无站点明细。</div>
+            )}
+          </SectionCard>
+        </div>
 
-        <SectionCard title="全历史站点排行" subtitle="当前范围内 Top 10">
-          {payload.charts.topDomains.length ? (
-            <RankBars data={payload.charts.topDomains} limit={10} />
-          ) : (
-            <div className="empty-state">暂无站点排行。</div>
-          )}
-        </SectionCard>
+        <div className="dashboard-chart-grid">
+          <SectionCard title="历史趋势" subtitle="按天聚合的活跃时长" className="dashboard-chart-card">
+            {payload.charts.dailySeries.length ? (
+              <Sparkline values={payload.charts.dailySeries.map((item) => item.value)} />
+            ) : (
+              <div className="empty-state">暂无趋势数据。</div>
+            )}
+          </SectionCard>
 
-        <SectionCard title="活跃热力" subtitle="最近 14 个有记录日期的小时分布" className="span-2">
-          {payload.charts.heatmapDays.length ? (
-            <HeatmapMatrix rows={payload.charts.heatmapDays} />
-          ) : (
-            <div className="empty-state">暂无热力数据。</div>
-          )}
-        </SectionCard>
+          <SectionCard title="全历史站点排行" subtitle="当前范围内 Top 10" className="dashboard-chart-card">
+            {payload.charts.topDomains.length ? (
+              <RankBars
+                data={payload.charts.topDomains}
+                limit={10}
+                selectedDomain={selectedDomainRows[0]?.domain}
+                onSelect={(domain) => void openSite(domain, range)}
+              />
+            ) : (
+              <div className="empty-state">暂无站点排行。</div>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title="活跃热力"
+            subtitle="最近 14 个有记录日期的小时分布"
+            className="dashboard-full-width dashboard-heatmap-card"
+          >
+            {payload.charts.heatmapDays.length ? (
+              <HeatmapMatrix rows={payload.charts.heatmapDays} />
+            ) : (
+              <div className="empty-state">暂无热力数据。</div>
+            )}
+          </SectionCard>
+        </div>
       </div>
     </PageShell>
   );

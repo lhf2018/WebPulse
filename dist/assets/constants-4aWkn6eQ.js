@@ -1,1 +1,0 @@
-const e="webpulse-db",s=1,o="webpulse-tick";const a={theme:"system",locale:"auto",idleThresholdSec:60,dashboardDefaultRange:"all"},E={exact:{},suffix:{},excluded:["chrome.google.com","addons.mozilla.org"]};export{o as A,a as D,e as a,s as b,E as c};

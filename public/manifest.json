@@ -21,7 +21,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["tabs", "storage", "alarms", "idle"],
+  "permissions": ["tabs", "storage", "alarms"],
   "options_page": "options.html",
   "commands": {
     "open-dashboard": {

@@ -45,7 +45,6 @@ export async function readSettings() {
     ...DEFAULT_SETTINGS,
     theme: stored.theme ?? DEFAULT_SETTINGS.theme,
     locale: stored.locale ?? DEFAULT_SETTINGS.locale,
-    idleThresholdSec: stored.idleThresholdSec ?? DEFAULT_SETTINGS.idleThresholdSec,
     dashboardDefaultRange
   };
 }

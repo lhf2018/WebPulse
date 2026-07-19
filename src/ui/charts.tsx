@@ -112,30 +112,55 @@ export function HeatmapMatrix({
 
 export function RankBars({
   data,
-  limit = 8
+  limit = 8,
+  onSelect,
+  selectedDomain
 }: {
   data: Array<{ domain: string; totalActiveMs: number }>;
   limit?: number;
+  onSelect?: (domain: string) => void;
+  selectedDomain?: string;
 }) {
   const rows = data.slice(0, limit);
   const max = Math.max(1, ...rows.map((item) => item.totalActiveMs));
   return (
     <div className="rank-list">
-      {rows.map((item, index) => (
-        <div className="rank-row" key={`${item.domain}-${index}`}>
-          <div className="rank-meta">
-            <span className="rank-index">#{index + 1}</span>
-            <div>
-              <strong>{item.domain}</strong>
-              <small>{formatDuration(item.totalActiveMs)}</small>
+      {rows.map((item, index) => {
+        const row = (
+          <>
+            <div className="rank-meta">
+              <span className="rank-index">#{index + 1}</span>
+              <div>
+                <strong>{item.domain}</strong>
+                <small>{formatDuration(item.totalActiveMs)}</small>
+              </div>
             </div>
+            <div className="rank-bar">
+              <span style={{ width: `${(item.totalActiveMs / max) * 100}%` }} />
+            </div>
+            <strong className="rank-value">{Math.round(item.totalActiveMs / 36_000) / 100}h</strong>
+          </>
+        );
+
+        if (onSelect) {
+          return (
+            <button
+              type="button"
+              key={`${item.domain}-${index}`}
+              className={`rank-row rank-row-button ${selectedDomain === item.domain ? "active" : ""}`}
+              onClick={() => onSelect(item.domain)}
+            >
+              {row}
+            </button>
+          );
+        }
+
+        return (
+          <div className="rank-row" key={`${item.domain}-${index}`}>
+            {row}
           </div>
-          <div className="rank-bar">
-            <span style={{ width: `${(item.totalActiveMs / max) * 100}%` }} />
-          </div>
-          <strong className="rank-value">{Math.round(item.totalActiveMs / 36_000) / 100}h</strong>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

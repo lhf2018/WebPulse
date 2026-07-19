@@ -34,7 +34,6 @@ import type {
 type SnapshotRecord = {
   activeContext: ActiveContext | null;
   focusedWindowId: number | null;
-  idleState: ActiveContext["idleState"];
   updatedAt: number;
 };
 
@@ -44,7 +43,6 @@ let settings: Settings = DEFAULT_SETTINGS;
 let rules: CategoryRules = DEFAULT_CATEGORY_RULES;
 let activeContext: ActiveContext | null = null;
 let focusedWindowId: number | null = null;
-let idleState: ActiveContext["idleState"] = "active";
 let tabDomains = new Map<number, string>();
 let bootstrapped = false;
 
@@ -249,6 +247,54 @@ function domainTotalsForRows(domainRows: DailyDomainStatRecord[]) {
     .sort((left, right) => right.totalActiveMs - left.totalActiveMs);
 }
 
+function domainRollupsForRows(domainRows: DailyDomainStatRecord[]) {
+  const totals = new Map<
+    string,
+    {
+      domain: string;
+      totalActiveMs: number;
+      activeVisitCount: number;
+      openVisitCount: number;
+      category: CategoryId;
+    }
+  >();
+  for (const row of domainRows) {
+    const current = totals.get(row.domain);
+    if (current) {
+      current.totalActiveMs += row.totalActiveMs;
+      current.activeVisitCount += row.activeVisitCount;
+      current.openVisitCount += row.openVisitCount;
+      current.category = row.category;
+    } else {
+      totals.set(row.domain, {
+        domain: row.domain,
+        totalActiveMs: row.totalActiveMs,
+        activeVisitCount: row.activeVisitCount,
+        openVisitCount: row.openVisitCount,
+        category: row.category
+      });
+    }
+  }
+  return Array.from(totals.values()).sort((left, right) => right.totalActiveMs - left.totalActiveMs);
+}
+
+function categoryTotalsForRows(domainRows: DailyDomainStatRecord[]) {
+  const totals = new Map<CategoryId, number>();
+  for (const row of domainRows) {
+    totals.set(row.category, (totals.get(row.category) ?? 0) + row.totalActiveMs);
+  }
+  return Array.from(totals.entries())
+    .map(([category, totalActiveMs]) => ({ category, totalActiveMs }))
+    .sort((left, right) => right.totalActiveMs - left.totalActiveMs);
+}
+
+function peakDayForRows(summaryRows: DailySummaryRecord[]) {
+  return summaryRows.reduce<{ dateKey?: string; totalActiveMs: number }>(
+    (best, row) => (row.totalActiveMs > best.totalActiveMs ? { dateKey: row.dateKey, totalActiveMs: row.totalActiveMs } : best),
+    { totalActiveMs: 0 }
+  );
+}
+
 function peakHourForRows(summaryRows: DailySummaryRecord[]) {
   const buckets = emptyBuckets(24);
   for (const row of summaryRows) {
@@ -313,13 +359,18 @@ function buildPeriodReport(
   const activeRows = activeSummaryRows(currentSummaries);
   const totalActiveMs = sumActiveMs(currentSummaries);
   const previousActiveMs = sumActiveMs(previousSummaries);
-  const topDomain = domainTotalsForRows(currentDomains)[0];
+  const domainRollups = domainRollupsForRows(currentDomains);
+  const topDomain = domainRollups[0];
+  const categoryBreakdown = categoryTotalsForRows(currentDomains);
+  const topCategory = categoryBreakdown[0];
   const peakHour = peakHourForRows(currentSummaries);
+  const peakDay = peakDayForRows(currentSummaries);
   const uniqueDomainCount = new Set(currentDomains.map((row) => row.domain)).size;
   const activeDayCountValue = activeRows.length;
   const highlights = [
     activeDayCountValue ? `${activeDayCountValue} 天有浏览记录` : "本周期还没有浏览记录",
     topDomain ? `停留最多：${topDomain.domain}` : "暂无站点排行",
+    peakDay?.dateKey ? `高峰日：${peakDay.dateKey}` : "暂无明显高峰日",
     peakHour != null ? `高峰时段：${String(peakHour).padStart(2, "0")}:00` : "暂无明显高峰"
   ];
   return {
@@ -334,8 +385,18 @@ function buildPeriodReport(
     avgDailyActiveMs: activeDayCountValue ? Math.round(totalActiveMs / activeDayCountValue) : 0,
     topDomain: topDomain?.domain,
     topDomainActiveMs: topDomain?.totalActiveMs,
+    topDomainActiveVisitCount: topDomain?.activeVisitCount,
+    topDomainOpenVisitCount: topDomain?.openVisitCount,
+    topCategory: topCategory?.category,
+    topCategoryActiveMs: topCategory?.totalActiveMs,
+    peakDateKey: peakDay.dateKey,
+    peakDateActiveMs: peakDay.totalActiveMs,
     peakHour,
     changePercent: percentChange(totalActiveMs, previousActiveMs),
+    activeCoveragePercent: currentSummaries.length
+      ? Math.round((activeDayCountValue / currentSummaries.length) * 100)
+      : 0,
+    categoryBreakdown,
     highlights
   };
 }
@@ -540,7 +601,6 @@ async function persistSnapshot() {
   const snapshot: SnapshotRecord = {
     activeContext,
     focusedWindowId,
-    idleState,
     updatedAt: now()
   };
   await setLocal({ [STORAGE_KEYS.snapshot]: snapshot });
@@ -551,7 +611,7 @@ async function loadSnapshot() {
 }
 
 function shouldTrackContext(context: ActiveContext | null) {
-  return Boolean(context && idleState !== "locked");
+  return Boolean(context && focusedWindowId !== null);
 }
 
 function bucketRecordAverage(record: DailyDomainStatRecord) {
@@ -667,8 +727,6 @@ async function startContextFromTab(tab: chrome.tabs.Tab) {
   const current = now();
   if (activeContext && activeContext.tabId === tab.id && activeContext.domain === domain) {
     activeContext.url = tab.url ?? activeContext.url;
-    activeContext.focused = true;
-    activeContext.idleState = "active";
     await persistSnapshot();
     await setBadge();
     return;
@@ -684,9 +742,7 @@ async function startContextFromTab(tab: chrome.tabs.Tab) {
     domain,
     category,
     startedAt: current,
-    lastCheckpointAt: current,
-    focused: true,
-    idleState: "active"
+    lastCheckpointAt: current
   };
   const dateKey = toDateKey(new Date(current));
   const { created } = await incrementDomainField(dateKey, domain, category, (record) => {
@@ -702,11 +758,8 @@ async function startContextFromTab(tab: chrome.tabs.Tab) {
 }
 
 async function maybeStartOrStopTracking() {
-  if (idleState === "locked") {
-    await endActiveContext();
-    return;
-  }
   if (focusedWindowId === null) {
+    await endActiveContext();
     return;
   }
   const tabs = await chrome.tabs.query({ active: true, windowId: focusedWindowId });
@@ -735,7 +788,6 @@ async function restoreRecentSnapshot() {
   if (now() - snapshot.updatedAt > SNAPSHOT_RECENT_WINDOW_MS) return;
   activeContext = snapshot.activeContext;
   focusedWindowId = snapshot.focusedWindowId;
-  idleState = snapshot.idleState;
 }
 
 async function bootstrap() {
@@ -747,8 +799,6 @@ async function bootstrap() {
     [STORAGE_KEYS.settings]: settings,
     [STORAGE_KEYS.rules]: rules
   });
-  idleState = "active";
-  await chrome.idle.setDetectionInterval(Math.max(15, settings.idleThresholdSec));
   await rebuildTabDomains();
   await restoreRecentSnapshot();
   if (focusedWindowId === null) {
@@ -813,22 +863,9 @@ async function handleTabRemoved(tabId: number) {
 
 async function handleWindowFocusChanged(windowId: number) {
   focusedWindowId = windowId === chrome.windows.WINDOW_ID_NONE ? null : windowId;
-  if (focusedWindowId !== null) {
-    await maybeStartOrStopTracking();
-  } else {
-    await persistSnapshot();
-  }
-}
-
-async function handleIdleStateChange(state: chrome.idle.IdleState) {
-  idleState = state;
-  if (state === "locked") {
+  if (focusedWindowId === null) {
     await endActiveContext();
     return;
-  }
-  if (activeContext) {
-    activeContext.idleState = state;
-    await persistSnapshot();
   }
   await maybeStartOrStopTracking();
 }
@@ -989,8 +1026,6 @@ async function handleMessage(message: AppMessage) {
     case "UPDATE_SETTINGS":
       settings = { ...settings, ...message.patch };
       await setLocal({ [STORAGE_KEYS.settings]: settings });
-      await chrome.idle.setDetectionInterval(Math.max(15, settings.idleThresholdSec));
-      await maybeStartOrStopTracking();
       await refreshPopupCache();
       return { ok: true as const };
     case "CLEAR_ALL_DATA":
@@ -1042,10 +1077,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
   void handleWindowFocusChanged(windowId);
-});
-
-chrome.idle.onStateChanged.addListener((state) => {
-  void handleIdleStateChange(state);
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {

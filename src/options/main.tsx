@@ -60,8 +60,7 @@ function OptionsApp() {
         </div>
       </SectionCard>
 
-      <div className="two-col">
-        <SectionCard title="显示与默认视图" subtitle="控制界面主题和仪表盘打开后的默认历史范围">
+      <SectionCard title="显示与默认视图" subtitle="控制界面主题和仪表盘打开后的默认历史范围">
           <div className="details-grid">
             <Field label="主题">
               <select
@@ -94,27 +93,7 @@ function OptionsApp() {
               </select>
             </Field>
           </div>
-        </SectionCard>
-
-        <SectionCard title="追踪精度" subtitle="系统空闲后停止累计活跃时长，恢复操作后继续记录">
-          <div className="details-grid">
-            <Field label="空闲阈值（秒）" hint="建议 60 秒。阈值越短，统计越严格。">
-              <input
-                type="number"
-                min={15}
-                step={15}
-                value={settings.idleThresholdSec}
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    idleThresholdSec: Number(event.target.value) || 60
-                  }))
-                }
-              />
-            </Field>
-          </div>
-        </SectionCard>
-      </div>
+      </SectionCard>
 
       <SectionCard title="数据操作" subtitle="以下操作只影响当前浏览器本地数据">
         <div className="hero-action">
