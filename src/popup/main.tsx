@@ -3,7 +3,8 @@ import ReactDOM from "react-dom/client";
 import { getPopupSnapshot, getSettings, openDashboard } from "../shared/api";
 import { applyTheme } from "../shared/theme";
 import type { PopupSnapshot } from "../shared/types";
-import { formatDuration } from "../shared/time";
+import { formatClockDuration, formatDuration } from "../shared/time";
+import { STORAGE_KEYS } from "../shared/storage/local";
 import { ActionButton, MetricCard } from "../ui/components";
 import { RankBars, RhythmBars } from "../ui/charts";
 import "../ui/styles.css";
@@ -40,7 +41,11 @@ function PopupApp() {
     void refresh();
     const refresher = window.setInterval(() => void refresh(), 9000);
     const ticker = window.setInterval(() => setNowMs(Date.now()), 1000);
-    const onChanged = () => void refresh();
+    const onChanged = (changes: Record<string, chrome.storage.StorageChange>) => {
+      if (changes[STORAGE_KEYS.settings] || changes[STORAGE_KEYS.popup]) {
+        void refresh();
+      }
+    };
     chrome.storage.onChanged.addListener(onChanged);
     return () => {
       window.clearInterval(refresher);
@@ -79,7 +84,7 @@ function PopupApp() {
         </div>
 
         <div className="popup-kpi-row">
-          <MetricCard label="今日时长" value={formatDuration(liveTodayMs)} tone="blue" />
+          <MetricCard label="今日时长" value={formatClockDuration(liveTodayMs)} tone="blue" />
           <MetricCard label="今日站点" value={`${snapshot.uniqueDomainCount}`} tone="mint" />
           <MetricCard label="成就" value={`${unlockedCount}/${snapshot.profile.achievements.length}`} tone="rose" />
         </div>

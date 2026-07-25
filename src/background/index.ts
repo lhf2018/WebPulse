@@ -37,7 +37,8 @@ type SnapshotRecord = {
   updatedAt: number;
 };
 
-const SNAPSHOT_RECENT_WINDOW_MS = 75_000;
+/** Allow ~2 alarm periods of slack after MV3 service-worker sleep before dropping a snapshot. */
+const SNAPSHOT_RECENT_WINDOW_MS = 120_000;
 
 let settings: Settings = DEFAULT_SETTINGS;
 let rules: CategoryRules = DEFAULT_CATEGORY_RULES;
@@ -45,6 +46,17 @@ let activeContext: ActiveContext | null = null;
 let focusedWindowId: number | null = null;
 let tabDomains = new Map<number, string>();
 let bootstrapped = false;
+/** Serialize tracking mutations so concurrent tab/alarm handlers cannot double-count. */
+let trackingLock: Promise<void> = Promise.resolve();
+
+function withTrackingLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = trackingLock.then(fn, fn);
+  trackingLock = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 function now() {
   return Date.now();
@@ -614,6 +626,12 @@ function shouldTrackContext(context: ActiveContext | null) {
   return Boolean(context && focusedWindowId !== null);
 }
 
+async function resolveFocusedWindowId() {
+  const windows = await chrome.windows.getAll();
+  const focused = windows.find((window) => window.focused && window.id != null);
+  return focused?.id ?? null;
+}
+
 function bucketRecordAverage(record: DailyDomainStatRecord) {
   record.avgVisitMs = record.activeVisitCount > 0 ? Math.round(record.totalActiveMs / record.activeVisitCount) : 0;
   record.updatedAt = now();
@@ -784,10 +802,11 @@ async function rebuildTabDomains() {
 
 async function restoreRecentSnapshot() {
   const snapshot = await loadSnapshot();
-  if (!snapshot?.activeContext) return;
-  if (now() - snapshot.updatedAt > SNAPSHOT_RECENT_WINDOW_MS) return;
+  if (!snapshot?.activeContext) return false;
+  if (now() - snapshot.updatedAt > SNAPSHOT_RECENT_WINDOW_MS) return false;
   activeContext = snapshot.activeContext;
   focusedWindowId = snapshot.focusedWindowId;
+  return true;
 }
 
 async function bootstrap() {
@@ -801,14 +820,31 @@ async function bootstrap() {
   });
   await rebuildTabDomains();
   await restoreRecentSnapshot();
-  if (focusedWindowId === null) {
-    const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    const activeTab = activeTabs.find((tab) => tab.windowId != null);
-    focusedWindowId = activeTab?.windowId ?? null;
-  }
+  // Live focus wins over whatever was persisted before the service worker slept.
+  focusedWindowId = await resolveFocusedWindowId();
   await chrome.alarms.create(ALARM_TICK, { periodInMinutes: 1 });
+
+  if (focusedWindowId === null) {
+    // Chrome is in the background: drop the restored session without crediting
+    // wall-clock time since lastCheckpoint (that gap may include unfocused time).
+    if (activeContext) {
+      activeContext = null;
+      await persistSnapshot();
+    }
+    await setBadge();
+    return;
+  }
+
   await maybeStartOrStopTracking();
+  // Commit any restored gap (lastCheckpointAt → now) once tracking is confirmed.
+  if (activeContext) {
+    await flushActiveContext();
+  }
   await setBadge();
+}
+
+async function ensureBootstrapped() {
+  await bootstrap();
 }
 
 function updateTabDomainMap(tabId: number, url?: string | null) {
@@ -822,62 +858,82 @@ function updateTabDomainMap(tabId: number, url?: string | null) {
 }
 
 async function handleTabCreated(tab: chrome.tabs.Tab) {
-  if (tab.incognito) return;
-  await registerOpenTab();
-  const domain = updateTabDomainMap(tab.id ?? -1, tab.url);
-  if (domain) {
-    await registerNavigation(domain, classifyDomain(domain, rules));
-  }
-  if (tab.active) {
-    focusedWindowId = tab.windowId ?? focusedWindowId;
-    await maybeStartOrStopTracking();
-  }
+  await withTrackingLock(async () => {
+    await ensureBootstrapped();
+    if (tab.incognito) return;
+    await registerOpenTab();
+    const domain = updateTabDomainMap(tab.id ?? -1, tab.url);
+    if (domain) {
+      await registerNavigation(domain, classifyDomain(domain, rules));
+    }
+    if (tab.active) {
+      focusedWindowId = tab.windowId ?? focusedWindowId;
+      await maybeStartOrStopTracking();
+    }
+  });
 }
 
 async function handleTabUpdated(tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) {
-  if (tab.incognito) return;
-  const previousDomain = tabDomains.get(tabId);
-  const nextDomain = updateTabDomainMap(tabId, tab.url ?? changeInfo.url ?? undefined);
-  if (nextDomain && nextDomain !== previousDomain) {
-    await registerNavigation(nextDomain, classifyDomain(nextDomain, rules));
-  }
-  if (activeContext?.tabId === tabId && nextDomain && nextDomain !== activeContext.domain) {
-    await flushActiveContext();
-  }
-  if (changeInfo.url || changeInfo.status === "complete") {
-    await maybeStartOrStopTracking();
-  }
+  await withTrackingLock(async () => {
+    await ensureBootstrapped();
+    if (tab.incognito) return;
+    const previousDomain = tabDomains.get(tabId);
+    const nextDomain = updateTabDomainMap(tabId, tab.url ?? changeInfo.url ?? undefined);
+    if (nextDomain && nextDomain !== previousDomain) {
+      await registerNavigation(nextDomain, classifyDomain(nextDomain, rules));
+    }
+    if (activeContext?.tabId === tabId && nextDomain && nextDomain !== activeContext.domain) {
+      await flushActiveContext();
+    }
+    if (changeInfo.url || changeInfo.status === "complete") {
+      await maybeStartOrStopTracking();
+    }
+  });
 }
 
 async function handleTabActivated(activeInfo: chrome.tabs.TabActiveInfo) {
-  focusedWindowId = activeInfo.windowId;
-  await maybeStartOrStopTracking();
+  await withTrackingLock(async () => {
+    await ensureBootstrapped();
+    focusedWindowId = activeInfo.windowId;
+    await maybeStartOrStopTracking();
+  });
 }
 
 async function handleTabRemoved(tabId: number) {
-  tabDomains.delete(tabId);
-  if (activeContext?.tabId === tabId) {
-    await endActiveContext();
-  }
+  await withTrackingLock(async () => {
+    await ensureBootstrapped();
+    tabDomains.delete(tabId);
+    if (activeContext?.tabId === tabId) {
+      await endActiveContext();
+    }
+  });
 }
 
 async function handleWindowFocusChanged(windowId: number) {
-  focusedWindowId = windowId === chrome.windows.WINDOW_ID_NONE ? null : windowId;
-  if (focusedWindowId === null) {
-    await endActiveContext();
-    return;
-  }
-  await maybeStartOrStopTracking();
+  await withTrackingLock(async () => {
+    await ensureBootstrapped();
+    focusedWindowId = windowId === chrome.windows.WINDOW_ID_NONE ? null : windowId;
+    if (focusedWindowId === null) {
+      await endActiveContext();
+      return;
+    }
+    await maybeStartOrStopTracking();
+  });
 }
 
 async function handleAlarm(alarm: chrome.alarms.Alarm) {
   if (alarm.name !== ALARM_TICK) return;
-  if (shouldTrackContext(activeContext)) {
-    await flushActiveContext();
+  await withTrackingLock(async () => {
+    // Critical: after MV3 SW sleep, memory is empty. Always bootstrap + resume,
+    // not only flush when activeContext already exists in this JS heap.
+    await ensureBootstrapped();
+    if (activeContext) {
+      await flushActiveContext();
+    }
     await maybeStartOrStopTracking();
-  }
-  await refreshPopupCache();
-  await setBadge();
+    await refreshPopupCache();
+    await setBadge();
+  });
 }
 
 async function buildPopupSnapshot(): Promise<PopupSnapshot> {
@@ -1015,47 +1071,53 @@ async function refreshPopupCache() {
 }
 
 async function handleMessage(message: AppMessage) {
-  await bootstrap();
-  switch (message.type) {
-    case "GET_POPUP_SNAPSHOT":
-      return await buildPopupSnapshot();
-    case "GET_DASHBOARD_PAYLOAD":
-      return await buildDashboardPayload(message.range);
-    case "GET_SETTINGS":
-      return { settings };
-    case "UPDATE_SETTINGS":
-      settings = { ...settings, ...message.patch };
-      await setLocal({ [STORAGE_KEYS.settings]: settings });
-      await refreshPopupCache();
-      return { ok: true as const };
-    case "CLEAR_ALL_DATA":
-      await clearAllIndexedDb();
-      await removeLocal([STORAGE_KEYS.snapshot, STORAGE_KEYS.popup]);
-      activeContext = null;
-      tabDomains = new Map();
-      await refreshPopupCache();
-      await setBadge();
-      return { ok: true as const };
-    case "OPEN_DASHBOARD":
-      await flushActiveContext();
-      await chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
-      return { ok: true as const };
-    default:
-      return { ok: true as const };
-  }
+  return withTrackingLock(async () => {
+    await ensureBootstrapped();
+    switch (message.type) {
+      case "GET_POPUP_SNAPSHOT":
+        return await buildPopupSnapshot();
+      case "GET_DASHBOARD_PAYLOAD":
+        return await buildDashboardPayload(message.range);
+      case "GET_SETTINGS":
+        return { settings };
+      case "UPDATE_SETTINGS":
+        settings = { ...settings, ...message.patch };
+        await setLocal({ [STORAGE_KEYS.settings]: settings });
+        await refreshPopupCache();
+        return { ok: true as const };
+      case "CLEAR_ALL_DATA":
+        await clearAllIndexedDb();
+        await removeLocal([STORAGE_KEYS.snapshot, STORAGE_KEYS.popup]);
+        activeContext = null;
+        tabDomains = new Map();
+        await refreshPopupCache();
+        await setBadge();
+        return { ok: true as const };
+      case "OPEN_DASHBOARD":
+        await flushActiveContext();
+        await chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
+        return { ok: true as const };
+      default:
+        return { ok: true as const };
+    }
+  });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  void bootstrap();
+  void withTrackingLock(() => bootstrap());
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void bootstrap();
+  void withTrackingLock(() => bootstrap());
 });
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === "open-dashboard") {
-    void flushActiveContext().then(() => chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") }));
+    void withTrackingLock(async () => {
+      await ensureBootstrapped();
+      await flushActiveContext();
+      await chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
+    });
   }
 });
 
