@@ -22,13 +22,13 @@ export const CATEGORY_LABELS: Record<CategoryId, string> = {
 };
 
 export const CATEGORY_COLORS: Record<CategoryId, string> = {
-  work: "#4f8cff",
-  social: "#f76f8e",
-  entertainment: "#ffb347",
-  shopping: "#9a7cff",
-  learning: "#35c2a6",
-  news: "#f55d5d",
-  other: "#9ca3af"
+  work: "#00fff0",
+  social: "#ff2bd6",
+  entertainment: "#b8ff3c",
+  shopping: "#7cf7ff",
+  learning: "#5ad7ff",
+  news: "#ff3355",
+  other: "#6b7c8f"
 };
 
 export interface Settings {
@@ -83,6 +83,17 @@ export interface ExperienceProfile {
   achievements: Achievement[];
 }
 
+export interface PopupDayCard {
+  dateKey: string;
+  totalActiveMs: number;
+  uniqueDomainCount: number;
+  openedTabCount: number;
+  activeHourBuckets: number[];
+  firstUsedAt?: number;
+  lastUsedAt?: number;
+  nightActiveMs: number;
+}
+
 export interface PopupSnapshot {
   dateKey: string;
   totalActiveMs: number;
@@ -99,10 +110,17 @@ export interface PopupSnapshot {
     uniqueDomainCount: number;
     openedTabCount: number;
   }>;
+  weekDays: PopupDayCard[];
+  heatmapDays: Array<{
+    dateKey: string;
+    buckets: number[];
+    totalActiveMs: number;
+  }>;
   todayWindow: UsageWindow;
   profile: ExperienceProfile;
   hourlyActivity: number[];
   trackingActive: boolean;
+  firstRecordDateKey?: string;
   updatedAt: number;
 }
 

@@ -6,7 +6,8 @@ export const STORAGE_KEYS = {
   rules: "webpulse.rules",
   snapshot: "webpulse.snapshot",
   popup: "webpulse.popup",
-  tabMap: "webpulse.tab-map"
+  tabMap: "webpulse.tab-map",
+  dayNotes: "webpulse.day-notes"
 } as const;
 
 type LocalMap = {
@@ -15,6 +16,7 @@ type LocalMap = {
   [STORAGE_KEYS.snapshot]: unknown;
   [STORAGE_KEYS.popup]: unknown;
   [STORAGE_KEYS.tabMap]: Record<string, string>;
+  [STORAGE_KEYS.dayNotes]: Record<string, string>;
 };
 
 function storage() {

@@ -99,8 +99,13 @@ export function HeatmapMatrix({
             <strong>{row.label}</strong>
             <div className="heatmap-hours">
               {row.buckets.map((value, index) => {
-                const opacity = value <= 0 ? 0.07 : 0.14 + (value / max) * 0.78;
-                return <span key={index} style={{ backgroundColor: `rgba(37, 99, 235, ${opacity.toFixed(2)})` }} />;
+                const opacity = value <= 0 ? 0.08 : 0.12 + (value / max) * 0.7;
+                return (
+                  <span
+                    key={index}
+                    style={{ backgroundColor: `rgba(94, 184, 212, ${opacity.toFixed(2)})` }}
+                  />
+                );
               })}
             </div>
           </div>

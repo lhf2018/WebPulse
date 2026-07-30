@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "只在本地统计浏览历史、活跃时长、站点排行和成就进度的 Chrome 扩展。",
   "action": {
-    "default_title": "浏览行为分析器",
+    "default_title": "NightWatch Heatmap",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

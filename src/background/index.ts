@@ -936,6 +936,27 @@ async function handleAlarm(alarm: chrome.alarms.Alarm) {
   });
 }
 
+function nightActiveMs(buckets: number[]) {
+  let total = 0;
+  for (let hour = 0; hour < 24; hour += 1) {
+    if (hour >= 22 || hour < 6) total += buckets[hour] ?? 0;
+  }
+  return total;
+}
+
+function buildDayCard(row: DailySummaryRecord, window: UsageWindow) {
+  return {
+    dateKey: row.dateKey,
+    totalActiveMs: row.totalActiveMs,
+    uniqueDomainCount: row.uniqueDomainCount,
+    openedTabCount: row.openedTabCount,
+    activeHourBuckets: row.activeHourBuckets,
+    firstUsedAt: window.firstUsedAt,
+    lastUsedAt: window.lastUsedAt,
+    nightActiveMs: nightActiveMs(row.activeHourBuckets)
+  };
+}
+
 async function buildPopupSnapshot(): Promise<PopupSnapshot> {
   await flushActiveContext();
   const today = toDateKey();
@@ -943,19 +964,31 @@ async function buildPopupSnapshot(): Promise<PopupSnapshot> {
   const domainRows = await getDailyDomainStatsInRange(today, today);
   const allSummaries = await getDailySummariesInRange("1970-01-01", today);
   const allDomains = await getDailyDomainStatsInRange("1970-01-01", today);
-  const recentStart = addDays(today, -6);
-  const recentRows = await getDailySummariesInRange(recentStart, today);
-  const recentMap = new Map(recentRows.map((row) => [row.dateKey, row]));
-  if (!recentMap.has(today)) {
-    recentMap.set(today, summary);
-  }
-  const allSummaryMap = new Map(allSummaries.map((row) => [row.dateKey, row]));
-  if (!allSummaryMap.has(today)) {
-    allSummaryMap.set(today, summary);
-  }
-  const recentDays = Array.from(recentMap.values())
-    .sort((left, right) => right.dateKey.localeCompare(left.dateKey))
-    .slice(0, 7)
+  const heatStart = addDays(today, -29);
+  const heatRows = await getDailySummariesInRange(heatStart, today);
+  const heatDomainRows = await getDailyDomainStatsInRange(heatStart, today);
+  const heatMap = new Map(heatRows.map((row) => [row.dateKey, row]));
+  if (!heatMap.has(today)) heatMap.set(today, summary);
+
+  const heatmapDays = Array.from({ length: 30 }, (_, index) => {
+    const dateKey = addDays(today, -index);
+    const row = heatMap.get(dateKey) ?? createEmptySummary(dateKey);
+    return {
+      dateKey,
+      buckets: row.activeHourBuckets,
+      totalActiveMs: row.totalActiveMs
+    };
+  });
+
+  const weekKeys = Array.from({ length: 7 }, (_, index) => addDays(today, index - 6));
+  const weekDays = weekKeys.map((dateKey) => {
+    const row = heatMap.get(dateKey) ?? createEmptySummary(dateKey);
+    return buildDayCard(row, deriveUsageWindow(heatDomainRows, dateKey));
+  });
+
+  const recentDays = weekDays
+    .slice()
+    .reverse()
     .map((row) => ({
       dateKey: row.dateKey,
       totalActiveMs: row.totalActiveMs,
@@ -969,6 +1002,14 @@ async function buildPopupSnapshot(): Promise<PopupSnapshot> {
     .slice(0, 5)
     .map((row) => ({ domain: row.domain, totalActiveMs: row.totalActiveMs, category: row.category }));
 
+  const allSummaryMap = new Map(allSummaries.map((row) => [row.dateKey, row]));
+  if (!allSummaryMap.has(today)) {
+    allSummaryMap.set(today, summary);
+  }
+  const orderedAll = Array.from(allSummaryMap.values()).sort((left, right) =>
+    left.dateKey.localeCompare(right.dateKey)
+  );
+
   return {
     dateKey: today,
     totalActiveMs: summary.totalActiveMs,
@@ -976,13 +1017,13 @@ async function buildPopupSnapshot(): Promise<PopupSnapshot> {
     openedTabCount: summary.openedTabCount,
     topDomains,
     recentDays,
+    weekDays,
+    heatmapDays,
     todayWindow: deriveUsageWindow(domainRows, today),
-    profile: buildExperienceProfile(
-      Array.from(allSummaryMap.values()).sort((left, right) => left.dateKey.localeCompare(right.dateKey)),
-      allDomains
-    ),
+    profile: buildExperienceProfile(orderedAll, allDomains),
     hourlyActivity: summary.activeHourBuckets,
     trackingActive: shouldTrackContext(activeContext),
+    firstRecordDateKey: orderedAll.find((row) => row.totalActiveMs > 0)?.dateKey,
     updatedAt: now()
   };
 }
@@ -1033,10 +1074,14 @@ async function buildDashboardPayload(range: DashboardRange): Promise<DashboardPa
   const topDomains = Array.from(domainMap.values())
     .sort((left, right) => right.totalActiveMs - left.totalActiveMs)
     .slice(0, 10);
-  const heatmapDays = summaryRows.slice(-14).map((row) => ({
-    label: row.dateKey.slice(5),
-    buckets: row.activeHourBuckets
-  }));
+  const heatmapDays = Array.from({ length: 14 }, (_, index) => {
+    const dateKey = addDays(end, -index);
+    const row = summaryRows.find((item) => item.dateKey === dateKey);
+    return {
+      label: `${Number(dateKey.slice(5, 7))}.${Number(dateKey.slice(8, 10))}`,
+      buckets: row?.activeHourBuckets ?? Array.from({ length: 24 }, () => 0)
+    };
+  });
   const dayWindows = summaryRows.map((row) => deriveUsageWindow(domainRows, row.dateKey));
   const timelineEntries = buildTimelineEntries(domainRows);
   const insights = buildTrendInsights(allSummaryRows, allDomainRows);

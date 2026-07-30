@@ -6,5 +6,7 @@ export function resolveTheme(mode: ThemeMode) {
 }
 
 export function applyTheme(mode: ThemeMode) {
-  document.documentElement.dataset.theme = resolveTheme(mode);
+  const resolved = resolveTheme(mode);
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.style.colorScheme = resolved;
 }

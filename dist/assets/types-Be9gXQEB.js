@@ -1,1 +1,0 @@
-const n={work:"工作",social:"社交",entertainment:"娱乐",shopping:"购物",learning:"学习",news:"资讯",other:"其他"},e={work:"#4f8cff",social:"#f76f8e",entertainment:"#ffb347",shopping:"#9a7cff",learning:"#35c2a6",news:"#f55d5d",other:"#9ca3af"};export{n as C,e as a};

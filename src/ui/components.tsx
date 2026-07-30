@@ -16,17 +16,23 @@ export function PageShell({
   dense?: boolean;
 }) {
   return (
-    <div className={`page-shell ${dense ? "dense" : ""}`}>
+    <div className={`page-shell cyber-hud ${dense ? "dense" : ""}`}>
+      <div className="grid-bg" aria-hidden />
       <div className="ambient ambient-a" />
       <div className="ambient ambient-b" />
-      <header className="hero">
-        <div>
-          <div className="eyebrow">Browsing Analytics</div>
-          <h1>{title}</h1>
-          {subtitle ? <p>{subtitle}</p> : null}
+      <header className="hud-bar page-hud">
+        <div className="hud-brand">
+          <span className="brand-mark" aria-hidden>
+            ◆
+          </span>
+          <div>
+            <div className="eyebrow">WEBPULSE // OPS</div>
+            <h1 className="hud-title neon-title">{title}</h1>
+          </div>
         </div>
-        {action ? <div className="hero-action">{action}</div> : null}
+        {action ? <div className="hud-actions">{action}</div> : null}
       </header>
+      {subtitle ? <p className="hud-subtitle">{subtitle}</p> : null}
       {children}
     </div>
   );
@@ -46,9 +52,9 @@ export function SectionCard({
   className?: string;
 }) {
   return (
-    <section className={`glass-card section-card ${className}`}>
+    <section className={`hud-panel section-card ${className}`}>
       {(title || subtitle || action) && (
-        <div className="section-head">
+        <div className="hud-panel-head section-head">
           <div>
             {title ? <h2>{title}</h2> : null}
             {subtitle ? <p>{subtitle}</p> : null}
@@ -99,7 +105,7 @@ export function RangeTabs({
           className={range === value ? "active" : ""}
           onClick={() => onChange(range)}
         >
-          {range === "week" ? "近 7 天" : range === "month" ? "本月" : "全部历史"}
+          {range === "week" ? "7D" : range === "month" ? "MONTH" : "ALL"}
         </button>
       ))}
     </div>

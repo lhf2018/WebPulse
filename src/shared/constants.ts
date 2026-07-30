@@ -6,7 +6,7 @@ export const DB_VERSION = 1;
 export const ALARM_TICK = "webpulse-tick";
 
 export const DEFAULT_SETTINGS: Settings = {
-  theme: "system",
+  theme: "dark",
   locale: "auto",
   dashboardDefaultRange: "all"
 };

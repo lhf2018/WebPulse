@@ -61,6 +61,23 @@ export function formatClockDuration(ms: number) {
   return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
 }
 
+export function formatCompactDuration(ms: number) {
+  const safe = Math.max(0, Math.floor(ms / 60_000));
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  if (hours <= 0) return `${minutes}m`;
+  return `${hours}h ${pad2(minutes)}m`;
+}
+
+export function formatHourMinute(value?: number) {
+  if (!value) return "--:--";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date(value));
+}
+
 export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }

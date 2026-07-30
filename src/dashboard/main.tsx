@@ -1,14 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { getDashboardPayload, getSettings } from "../shared/api";
 import { DEFAULT_SETTINGS } from "../shared/constants";
 import { applyTheme } from "../shared/theme";
-import { CATEGORY_COLORS, CATEGORY_LABELS } from "../shared/types";
-import type { DashboardPayload, DashboardRange, PeriodReport, TimelineEntry, TrendInsight } from "../shared/types";
+import type { Achievement, DashboardPayload, DashboardRange, PeriodReport, TrendInsight } from "../shared/types";
 import { formatDuration, parseDateKey } from "../shared/time";
-import { ActionButton, MetricCard, PageShell, RangeTabs, SectionCard } from "../ui/components";
 import { HeatmapMatrix, RankBars, RhythmBars, Sparkline } from "../ui/charts";
-import "../ui/styles.css";
+import "./dashboard.css";
+
+type DashTab = "overview" | "days" | "sites" | "reports" | "achievements";
+
+const TABS: Array<{ id: DashTab; label: string }> = [
+  { id: "overview", label: "总览" },
+  { id: "days", label: "按日" },
+  { id: "sites", label: "站点" },
+  { id: "reports", label: "报告" },
+  { id: "achievements", label: "成就" }
+];
 
 function formatDay(dateKey: string) {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -22,18 +30,8 @@ function formatTime(value?: number) {
   if (!value) return "--:--";
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
-
-function formatDateTime(value?: number) {
-  if (!value) return "暂无";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    hour12: false
   }).format(new Date(value));
 }
 
@@ -42,26 +40,6 @@ function insightToneLabel(tone: TrendInsight["tone"]) {
   if (tone === "down") return "下降";
   if (tone === "peak") return "高峰";
   return "稳定";
-}
-
-function timelineWidth(entry: TimelineEntry, maxMs: number) {
-  if (entry.totalActiveMs <= 0) return 4;
-  return Math.max(8, (entry.totalActiveMs / Math.max(1, maxMs)) * 100);
-}
-
-function siteUrl(domain: string, range: DashboardRange) {
-  const url = new URL(chrome.runtime.getURL("site.html"));
-  url.searchParams.set("domain", domain);
-  url.searchParams.set("range", range);
-  return url.toString();
-}
-
-function openSite(domain: string, range: DashboardRange) {
-  return chrome.tabs.create({ url: siteUrl(domain, range) });
-}
-
-function categoryWidth(total: number, max: number) {
-  return `${Math.max(10, (total / Math.max(1, max)) * 100)}%`;
 }
 
 function toCsv(payload: DashboardPayload) {
@@ -77,17 +55,6 @@ function toCsv(payload: DashboardPayload) {
   return `${headA}\n${rowsA.join("\n")}\n\n${headB}\n${rowsB.join("\n")}`;
 }
 
-function toExportJson(payload: DashboardPayload) {
-  return {
-    ...payload,
-    domainRows: payload.domainRows.map(({ category, ...row }) => row),
-    charts: {
-      ...payload.charts,
-      topDomains: payload.charts.topDomains.map(({ category, ...row }) => row)
-    }
-  };
-}
-
 function downloadText(name: string, text: string, type: string) {
   const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
@@ -100,25 +67,21 @@ function downloadText(name: string, text: string, type: string) {
 
 function ReportCard({ report }: { report: PeriodReport }) {
   const change = report.changePercent ?? 0;
-  const detailRange: DashboardRange = report.id === "weekly" ? "week" : "month";
-  const topCategory = report.topCategory ? CATEGORY_LABELS[report.topCategory] : "暂无";
-  const categoryBreakdown = report.categoryBreakdown.slice(0, 4);
-  const categoryMax = Math.max(1, ...categoryBreakdown.map((item) => item.totalActiveMs));
   return (
-    <div className="report-card">
-      <div className="report-head">
+    <div className="db-report">
+      <div className="db-report-head">
         <div>
           <strong>{report.title}</strong>
           <small>
             {report.startDateKey} 至 {report.endDateKey}
           </small>
         </div>
-        <span className={change >= 0 ? "positive" : "negative"}>
+        <span className={change >= 0 ? "" : "neg"}>
           {change >= 0 ? "+" : ""}
           {change}%
         </span>
       </div>
-      <div className="report-metrics">
+      <div className="db-report-metrics">
         <div>
           <span>活跃时长</span>
           <strong>{formatDuration(report.totalActiveMs)}</strong>
@@ -136,67 +99,35 @@ function ReportCard({ report }: { report: PeriodReport }) {
           <strong>{formatDuration(report.avgDailyActiveMs)}</strong>
         </div>
       </div>
-      <div className="report-focus-grid">
-        <button
-          type="button"
-          className="report-focus-card"
-          onClick={() => report.topDomain && void openSite(report.topDomain, detailRange)}
-          disabled={!report.topDomain}
-        >
-          <span>主站点</span>
-          <strong>{report.topDomain ?? "暂无"}</strong>
-          <small>{formatDuration(report.topDomainActiveMs ?? 0)}</small>
-        </button>
-        <div className="report-focus-card">
-          <span>主分类</span>
-          <strong>{topCategory}</strong>
-          <small>{formatDuration(report.topCategoryActiveMs ?? 0)}</small>
-        </div>
-        <div className="report-focus-card">
-          <span>高峰日</span>
-          <strong>{report.peakDateKey ?? "暂无"}</strong>
-          <small>{formatDuration(report.peakDateActiveMs ?? 0)}</small>
-        </div>
-        <div className="report-focus-card">
-          <span>覆盖率</span>
-          <strong>{report.activeCoveragePercent}%</strong>
-          <small>有记录天数占周期</small>
-        </div>
-      </div>
-      <div className="report-category-stack">
-        {categoryBreakdown.map((item) => (
-          <div className="report-category-row" key={item.category}>
-            <span>
-              <i style={{ backgroundColor: CATEGORY_COLORS[item.category] }} />
-              {CATEGORY_LABELS[item.category]}
-            </span>
-            <div className="report-category-bar">
-              <b style={{ width: categoryWidth(item.totalActiveMs, categoryMax) }} />
-            </div>
-            <strong>{formatDuration(item.totalActiveMs)}</strong>
-          </div>
-        ))}
-      </div>
-      <div className="report-highlights">
-        {report.highlights.map((item) => (
-          <span key={item}>{item}</span>
-        ))}
-      </div>
+      {report.highlights?.length ? (
+        <small style={{ color: "var(--db-muted)", fontSize: "0.68rem", lineHeight: 1.4 }}>
+          {report.highlights.slice(0, 3).join(" · ")}
+        </small>
+      ) : null}
     </div>
   );
+}
+
+function readInitialTab(): DashTab {
+  const hash = location.hash.replace("#", "");
+  if (TABS.some((tab) => tab.id === hash)) return hash as DashTab;
+  return "overview";
 }
 
 function DashboardApp() {
   const [range, setRange] = useState<DashboardRange>(DEFAULT_SETTINGS.dashboardDefaultRange);
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
+  const [tab, setTab] = useState<DashTab>(readInitialTab);
   const [loading, setLoading] = useState(true);
+  const [achFilter, setAchFilter] = useState<"all" | "unlocked" | "progress" | "locked">("all");
 
   useEffect(() => {
     void (async () => {
       const config = await getSettings();
       setRange(config.settings.dashboardDefaultRange);
-      applyTheme(config.settings.theme);
+      applyTheme("dark");
     })();
   }, []);
 
@@ -211,64 +142,103 @@ function DashboardApp() {
     if (!payload) return;
     const dates = payload.summaryRows.map((row) => row.dateKey);
     setSelectedDate((current) => (current && dates.includes(current) ? current : dates[dates.length - 1] ?? null));
+    const top = payload.charts.topDomains[0]?.domain ?? null;
+    setSelectedDomain((current) => current ?? top);
   }, [payload]);
 
+  useEffect(() => {
+    location.hash = tab;
+  }, [tab]);
+
+  const derived = useMemo(() => {
+    if (!payload) return null;
+    const latestFirst = payload.summaryRows.slice().reverse();
+    const selectedSummary = payload.summaryRows.find((row) => row.dateKey === selectedDate) ?? null;
+    const selectedWindow = payload.dayWindows.find((item) => item.dateKey === selectedDate) ?? {};
+    const selectedDaySites = payload.domainRows
+      .filter((row) => row.dateKey === selectedDate)
+      .sort((left, right) => right.totalActiveMs - left.totalActiveMs)
+      .slice(0, 12);
+    const selectedTimeline = payload.timelineEntries.filter((entry) => entry.dateKey === selectedDate).slice(0, 24);
+    const averageDaily = payload.summaryRows.length
+      ? Math.round(payload.totals.totalActiveMs / payload.summaryRows.length)
+      : 0;
+    const domainHistory = selectedDomain
+      ? payload.domainRows
+          .filter((row) => row.domain === selectedDomain)
+          .sort((left, right) => left.dateKey.localeCompare(right.dateKey))
+      : [];
+    const domainTotal = domainHistory.reduce((sum, row) => sum + row.totalActiveMs, 0);
+    const domainDayRows = [...domainHistory].reverse();
+    const achievements = payload.profile.achievements;
+    const filteredAchievements = achievements.filter((item) => {
+      if (achFilter === "unlocked") return item.unlocked;
+      if (achFilter === "progress") return !item.unlocked && item.progress > 0;
+      if (achFilter === "locked") return !item.unlocked && item.progress === 0;
+      return true;
+    });
+    return {
+      latestFirst,
+      selectedSummary,
+      selectedWindow,
+      selectedDaySites,
+      selectedTimeline,
+      averageDaily,
+      domainHistory,
+      domainDayRows,
+      domainTotal,
+      achievements,
+      filteredAchievements,
+      unlockedCount: achievements.filter((item) => item.unlocked).length
+    };
+  }, [payload, selectedDate, selectedDomain, achFilter]);
+
   if (loading && !payload) {
-    return <div className="loading-state">正在整理本地历史数据...</div>;
+    return <div className="db-loading">正在整理本地历史数据...</div>;
   }
 
-  if (!payload) {
-    return <div className="loading-state">暂无可展示数据。</div>;
+  if (!payload || !derived) {
+    return <div className="db-loading">暂无可展示数据。</div>;
   }
 
-  const latestFirst = payload.summaryRows.slice().reverse();
-  const maxDayMs = Math.max(1, ...payload.summaryRows.map((row) => row.totalActiveMs));
-  const selectedSummary = payload.summaryRows.find((row) => row.dateKey === selectedDate) ?? null;
-  const selectedWindow = payload.dayWindows.find((item) => item.dateKey === selectedDate) ?? {};
-  const selectedDomainRows = payload.domainRows
-    .filter((row) => row.dateKey === selectedDate)
-    .sort((left, right) => right.totalActiveMs - left.totalActiveMs);
-  const selectedTimeline = payload.timelineEntries.filter((entry) => entry.dateKey === selectedDate).slice(0, 30);
-  const maxTimelineMs = Math.max(1, ...selectedTimeline.map((entry) => entry.totalActiveMs));
-  const averageDaily = payload.summaryRows.length
-    ? Math.round(payload.totals.totalActiveMs / payload.summaryRows.length)
-    : 0;
   const rangeText = payload.range === "week" ? "近 7 天" : payload.range === "month" ? "本月" : "全部历史";
-  const unlockedCount = payload.profile.achievements.filter((item) => item.unlocked).length;
 
   return (
-    <PageShell
-      title="浏览历史仪表盘"
-      subtitle="默认持续追踪，数据只写入当前浏览器本地 IndexedDB；按日期查看每天的详细浏览节奏。"
-      action={
-        <>
-          <div className="top-nav-actions">
-            <button type="button" className="nav-pill active">
-              历史仪表盘
-            </button>
+    <div className="db-app">
+      <header className="db-top">
+        <div className="db-brand">
+          <h1>NightWatch · 历史仪表盘</h1>
+          <p>
+            {rangeText} · {payload.startDateKey} → {payload.endDateKey}
+          </p>
+        </div>
+        <div className="db-top-actions">
+          {(["week", "month", "all"] as DashboardRange[]).map((item) => (
             <button
+              key={item}
               type="button"
-              className="nav-pill"
-              onClick={() => void chrome.tabs.create({ url: chrome.runtime.getURL("achievements.html") })}
+              className={`db-btn ${range === item ? "active" : ""}`}
+              onClick={() => setRange(item)}
             >
-              成就系统
+              {item === "week" ? "7 天" : item === "month" ? "本月" : "全部"}
             </button>
-          </div>
-          <RangeTabs value={range} onChange={setRange} />
-          <ActionButton
-            variant="ghost"
+          ))}
+          <button
+            type="button"
+            className="db-btn"
             onClick={() =>
               downloadText(
                 `webpulse-${payload.startDateKey}-${payload.endDateKey}.json`,
-                JSON.stringify(toExportJson(payload), null, 2),
+                JSON.stringify(payload, null, 2),
                 "application/json"
               )
             }
           >
             导出 JSON
-          </ActionButton>
-          <ActionButton
-            variant="secondary"
+          </button>
+          <button
+            type="button"
+            className="db-btn"
             onClick={() =>
               downloadText(
                 `webpulse-${payload.startDateKey}-${payload.endDateKey}.csv`,
@@ -278,255 +248,377 @@ function DashboardApp() {
             }
           >
             导出 CSV
-          </ActionButton>
-          <ActionButton variant="ghost" onClick={() => void chrome.runtime.openOptionsPage()}>
+          </button>
+          <button type="button" className="db-btn" onClick={() => void chrome.runtime.openOptionsPage()}>
             设置
-          </ActionButton>
-        </>
-      }
-    >
-      <div className="dashboard-stack">
-        <div className="dashboard-overview-grid">
-          <SectionCard title="当前范围" subtitle="本地记录状态" className="dashboard-status-card">
-            <div className="status-banner refined">
-              <div>
-                <strong>追踪已自动开启</strong>
-                <small>
-                  {rangeText}，{payload.startDateKey} 至 {payload.endDateKey}
-                </small>
-              </div>
-              <div className="status-number">
-                <span>记录天数</span>
-                <strong>{payload.summaryRows.length}</strong>
-              </div>
-            </div>
-          </SectionCard>
+          </button>
+        </div>
+      </header>
 
-          <SectionCard title="历史总览" subtitle="当前范围内的聚合结果" className="dashboard-metrics-card">
-            <div className="metric-grid">
-              <MetricCard label="累计活跃时长" value={formatDuration(payload.totals.totalActiveMs)} tone="blue" />
-              <MetricCard label="访问站点数" value={`${payload.totals.uniqueDomainCount}`} tone="mint" />
-              <MetricCard label="新标签页" value={`${payload.totals.openedTabCount}`} tone="amber" />
-              <MetricCard label="日均活跃" value={formatDuration(averageDaily)} tone="rose" />
-            </div>
-          </SectionCard>
-
-          <SectionCard
-            title="成长等级"
-            subtitle={`${unlockedCount}/${payload.profile.achievements.length} 个成就已解锁`}
-            className="dashboard-level-card"
+      <nav className="db-tabs" aria-label="仪表盘分区">
+        {TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={tab === item.id ? "active" : ""}
+            onClick={() => setTab(item.id)}
           >
-            <div className="level-panel">
-              <div className="level-orb large">
-                <span>Lv</span>
-                <strong>{payload.profile.level}</strong>
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "overview" ? (
+        <>
+          <section className="db-kpi">
+            <div className="db-stat">
+              <span>累计活跃</span>
+              <strong>{formatDuration(payload.totals.totalActiveMs)}</strong>
+            </div>
+            <div className="db-stat">
+              <span>访问站点</span>
+              <strong>{payload.totals.uniqueDomainCount}</strong>
+            </div>
+            <div className="db-stat">
+              <span>新标签页</span>
+              <strong>{payload.totals.openedTabCount}</strong>
+            </div>
+            <div className="db-stat">
+              <span>日均活跃</span>
+              <strong>{formatDuration(derived.averageDaily)}</strong>
+            </div>
+          </section>
+
+          <section className="db-grid-2">
+            <article className="db-card">
+              <div className="db-card-head">
+                <h2>历史趋势</h2>
+                <span>按天聚合</span>
               </div>
-              <div className="level-info">
-                <strong>{payload.profile.levelTitle}</strong>
-                <small>
-                  {payload.profile.xp} XP / 下一级 {payload.profile.nextLevelXp} XP
-                </small>
-                <div className="xp-bar">
-                  <span style={{ width: `${payload.profile.progress * 100}%` }} />
+              <div className="db-card-body">
+                {payload.charts.dailySeries.length ? (
+                  <Sparkline values={payload.charts.dailySeries.map((item) => item.value)} />
+                ) : (
+                  <div className="db-empty">暂无趋势数据</div>
+                )}
+              </div>
+            </article>
+            <article className="db-card">
+              <div className="db-card-head">
+                <h2>成长</h2>
+                <span>
+                  {derived.unlockedCount}/{derived.achievements.length} 成就
+                </span>
+              </div>
+              <div className="db-card-body">
+                <div className="db-level">
+                  <div className="db-level-orb">
+                    <span>LV</span>
+                    <strong>{payload.profile.level}</strong>
+                  </div>
+                  <div>
+                    <strong>{payload.profile.levelTitle}</strong>
+                    <div className="db-bar" style={{ marginTop: 8 }}>
+                      <span style={{ width: `${payload.profile.progress * 100}%` }} />
+                    </div>
+                    <small style={{ color: "var(--db-muted)", fontSize: "0.68rem" }}>
+                      {payload.profile.xp} / {payload.profile.nextLevelXp} XP
+                    </small>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="time-pair">
-              <div>
-                <span>最早使用</span>
-                <strong>{formatDateTime(payload.profile.usageWindow.firstUsedAt)}</strong>
-                <small>{payload.profile.usageWindow.firstDomain ?? "暂无"}</small>
-              </div>
-              <div>
-                <span>最晚使用</span>
-                <strong>{formatDateTime(payload.profile.usageWindow.lastUsedAt)}</strong>
-                <small>{payload.profile.usageWindow.lastDomain ?? "暂无"}</small>
-              </div>
-            </div>
-          </SectionCard>
-        </div>
+            </article>
+          </section>
 
-        <div className="dashboard-analysis-grid">
-          <SectionCard title="趋势洞察" subtitle="自动比较近 7 天、本月和历史高峰" className="dashboard-insight-section">
-            <div className="insight-grid">
-              {payload.insights.map((insight: TrendInsight) => (
-                <div className={`insight-card tone-${insight.tone}`} key={insight.id}>
-                  <span>{insightToneLabel(insight.tone)}</span>
-                  <strong>{insight.value}</strong>
-                  <b>{insight.title}</b>
-                  <small>{insight.description}</small>
+          <article className="db-card">
+            <div className="db-card-head">
+              <h2>活跃热力</h2>
+              <span>近 14 日小时分布</span>
+            </div>
+            <div className="db-card-body">
+              {payload.charts.heatmapDays.length ? (
+                <HeatmapMatrix rows={payload.charts.heatmapDays} />
+              ) : (
+                <div className="db-empty">暂无热力数据</div>
+              )}
+            </div>
+          </article>
+
+          <article className="db-card">
+            <div className="db-card-head">
+              <h2>趋势洞察</h2>
+            </div>
+            <div className="db-card-body">
+              <div className="db-insight-grid">
+                {payload.insights.map((insight) => (
+                  <div className="db-insight" key={insight.id}>
+                    <span>{insightToneLabel(insight.tone)}</span>
+                    <strong>{insight.value}</strong>
+                    <b>{insight.title}</b>
+                    <small>{insight.description}</small>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </article>
+        </>
+      ) : null}
+
+      {tab === "days" ? (
+        <section className="db-grid-day">
+          <article className="db-card">
+            <div className="db-card-head">
+              <h2>历史日期</h2>
+              <span>{derived.latestFirst.length} 天</span>
+            </div>
+            <div className="db-card-body">
+              {derived.latestFirst.length ? (
+                <div className="db-day-list">
+                  {derived.latestFirst.map((row) => (
+                    <button
+                      type="button"
+                      className={`db-day-item ${row.dateKey === selectedDate ? "active" : ""}`}
+                      key={row.dateKey}
+                      onClick={() => setSelectedDate(row.dateKey)}
+                    >
+                      <span>
+                        <strong>{formatDay(row.dateKey)}</strong>
+                        <small>{row.dateKey}</small>
+                      </span>
+                      <b>{formatDuration(row.totalActiveMs)}</b>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="db-empty">还没有历史记录</div>
+              )}
+            </div>
+          </article>
+
+          <article className="db-card">
+            <div className="db-card-head">
+              <h2>{selectedDate ?? "单日详情"}</h2>
+              <span>当天指标与节奏</span>
+            </div>
+            <div className="db-card-body">
+              {derived.selectedSummary ? (
+                <>
+                  <div className="db-metrics">
+                    <div className="db-stat">
+                      <span>当天活跃</span>
+                      <strong>{formatDuration(derived.selectedSummary.totalActiveMs)}</strong>
+                    </div>
+                    <div className="db-stat">
+                      <span>站点</span>
+                      <strong>{derived.selectedSummary.uniqueDomainCount}</strong>
+                    </div>
+                    <div className="db-stat">
+                      <span>新标签</span>
+                      <strong>{derived.selectedSummary.openedTabCount}</strong>
+                    </div>
+                    <div className="db-stat">
+                      <span>单站平均</span>
+                      <strong>
+                        {formatDuration(
+                          derived.selectedSummary.uniqueDomainCount
+                            ? Math.round(
+                                derived.selectedSummary.totalActiveMs / derived.selectedSummary.uniqueDomainCount
+                              )
+                            : 0
+                        )}
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="db-pair">
+                    <div>
+                      <span>最早</span>
+                      <strong>{formatTime(derived.selectedWindow.firstUsedAt)}</strong>
+                      <small>{derived.selectedWindow.firstDomain ?? "暂无"}</small>
+                    </div>
+                    <div>
+                      <span>最晚</span>
+                      <strong>{formatTime(derived.selectedWindow.lastUsedAt)}</strong>
+                      <small>{derived.selectedWindow.lastDomain ?? "暂无"}</small>
+                    </div>
+                  </div>
+                  <RhythmBars values={derived.selectedSummary.activeHourBuckets} />
+                  <div style={{ height: 12 }} />
+                  {derived.selectedDaySites.length ? (
+                    <div className="db-site-list" style={{ marginBottom: 12 }}>
+                      {derived.selectedDaySites.map((row, index) => (
+                        <button
+                          type="button"
+                          className="db-site-row"
+                          key={row.id}
+                          onClick={() => {
+                            setSelectedDomain(row.domain);
+                            setTab("sites");
+                          }}
+                        >
+                          <span>#{index + 1}</span>
+                          <div>
+                            <strong>{row.domain}</strong>
+                            <small>
+                              {row.activeVisitCount} 活跃 / {row.openVisitCount} 打开
+                            </small>
+                          </div>
+                          <b>{formatDuration(row.totalActiveMs)}</b>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="db-timeline">
+                    {derived.selectedTimeline.length ? (
+                      derived.selectedTimeline.map((entry) => (
+                        <div className="db-timeline-row" key={`${entry.domain}-${entry.startAt}`}>
+                          <time>{formatTime(entry.startAt)}</time>
+                          <div>
+                            <strong>{entry.domain}</strong>
+                            <small>
+                              {formatTime(entry.startAt)} - {formatTime(entry.endAt)}
+                            </small>
+                          </div>
+                          <b>{formatDuration(entry.totalActiveMs)}</b>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="db-empty">当天暂无时间轴</div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="db-empty">选择左侧日期后查看详情</div>
+              )}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {tab === "sites" ? (
+        <section className="db-grid-2">
+          <article className="db-card">
+            <div className="db-card-head">
+              <h2>站点排行</h2>
+              <span>点击查看明细</span>
+            </div>
+            <div className="db-card-body">
+              {payload.charts.topDomains.length ? (
+                <div className="db-site-list">
+                  {payload.charts.topDomains.map((item, index) => (
+                    <button
+                      type="button"
+                      key={item.domain}
+                      className={`db-site-row ${selectedDomain === item.domain ? "active" : ""}`}
+                      onClick={() => setSelectedDomain(item.domain)}
+                    >
+                      <span>#{index + 1}</span>
+                      <div>
+                        <strong>{item.domain}</strong>
+                        <small>{formatDuration(item.totalActiveMs)}</small>
+                      </div>
+                      <b>{Math.round(item.totalActiveMs / 36_000) / 100}h</b>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="db-empty">暂无站点排行</div>
+              )}
+            </div>
+          </article>
+
+          <article className="db-card">
+            <div className="db-card-head">
+              <h2>{selectedDomain ?? "站点详情"}</h2>
+              <span>范围内累计 {formatDuration(derived.domainTotal)}</span>
+            </div>
+            <div className="db-card-body">
+              {selectedDomain && derived.domainHistory.length ? (
+                <>
+                  <RankBars
+                    data={derived.domainHistory.map((row) => ({
+                      domain: row.dateKey,
+                      totalActiveMs: row.totalActiveMs
+                    }))}
+                    limit={14}
+                  />
+                  <div style={{ height: 10 }} />
+                  <div className="db-site-list">
+                    {derived.domainDayRows.map((row, index) => (
+                      <div className="db-site-row" key={row.id}>
+                        <span>#{index + 1}</span>
+                        <div>
+                          <strong>{row.dateKey}</strong>
+                          <small>
+                            {row.activeVisitCount} 活跃 / {row.openVisitCount} 打开 · 均次 {formatDuration(row.avgVisitMs)}
+                          </small>
+                        </div>
+                        <b>{formatDuration(row.totalActiveMs)}</b>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="db-empty">选择左侧站点查看明细</div>
+              )}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {tab === "reports" ? (
+        <section className="db-report-grid">
+          <ReportCard report={payload.reports.weekly} />
+          <ReportCard report={payload.reports.monthly} />
+        </section>
+      ) : null}
+
+      {tab === "achievements" ? (
+        <article className="db-card">
+          <div className="db-card-head">
+            <h2>成就</h2>
+            <span>
+              {derived.unlockedCount}/{derived.achievements.length} 已解锁
+            </span>
+          </div>
+          <div className="db-card-body">
+            <div className="db-filters">
+              {(
+                [
+                  ["all", "全部"],
+                  ["unlocked", "已解锁"],
+                  ["progress", "进行中"],
+                  ["locked", "未解锁"]
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={achFilter === id ? "active" : ""}
+                  onClick={() => setAchFilter(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="db-achievements">
+              {derived.filteredAchievements.map((item: Achievement) => (
+                <div className={`db-ach ${item.unlocked ? "unlocked" : ""}`} key={item.id}>
+                  <strong>{item.title}</strong>
+                  <p>{item.description}</p>
+                  <div className="db-bar">
+                    <span style={{ width: `${item.progress * 100}%` }} />
+                  </div>
+                  <small>
+                    {Math.min(item.current, item.target)} / {item.target}
+                    {item.unlocked ? " · 已完成" : ""}
+                  </small>
                 </div>
               ))}
             </div>
-          </SectionCard>
-
-          <SectionCard title="周报 / 月报" subtitle="滚动 7 天与本月的本地总结" className="dashboard-report-section">
-            <div className="report-stack">
-              <ReportCard report={payload.reports.weekly} />
-              <ReportCard report={payload.reports.monthly} />
-            </div>
-          </SectionCard>
-        </div>
-
-        <div className="dashboard-day-grid">
-          <SectionCard title="历史日期" subtitle="选择一天查看当天详情" className="history-days dashboard-fixed-card">
-            {latestFirst.length ? (
-              <div className="day-list">
-                {latestFirst.map((row) => (
-                  <button
-                    type="button"
-                    className={`day-button ${row.dateKey === selectedDate ? "active" : ""}`}
-                    key={row.dateKey}
-                    onClick={() => setSelectedDate(row.dateKey)}
-                  >
-                    <span>
-                      <strong>{formatDay(row.dateKey)}</strong>
-                      <small>{row.dateKey}</small>
-                    </span>
-                    <b>{formatDuration(row.totalActiveMs)}</b>
-                    <i style={{ width: `${(row.totalActiveMs / maxDayMs) * 100}%` }} />
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">还没有历史记录。浏览网页后这里会按天展示。</div>
-            )}
-          </SectionCard>
-
-          <SectionCard
-            title={selectedDate ? `${selectedDate} 详细信息` : "单日详细信息"}
-            subtitle="当天指标、最早/最晚使用和 24 小时活跃节奏"
-            className="day-detail-panel dashboard-fixed-card"
-          >
-            {selectedSummary ? (
-              <div className="day-detail-stack">
-                <div className="metric-grid day-metrics">
-                  <MetricCard label="当天活跃" value={formatDuration(selectedSummary.totalActiveMs)} tone="blue" />
-                  <MetricCard label="当天站点" value={`${selectedSummary.uniqueDomainCount}`} tone="mint" />
-                  <MetricCard label="新标签页" value={`${selectedSummary.openedTabCount}`} tone="amber" />
-                  <MetricCard
-                    label="单站平均"
-                    value={formatDuration(
-                      selectedSummary.uniqueDomainCount
-                        ? Math.round(selectedSummary.totalActiveMs / selectedSummary.uniqueDomainCount)
-                        : 0
-                    )}
-                    tone="rose"
-                  />
-                </div>
-                <div className="time-pair day-window">
-                  <div>
-                    <span>当天最早使用</span>
-                    <strong>{formatTime(selectedWindow.firstUsedAt)}</strong>
-                    <small>{selectedWindow.firstDomain ?? "暂无"}</small>
-                  </div>
-                  <div>
-                    <span>当天最晚使用</span>
-                    <strong>{formatTime(selectedWindow.lastUsedAt)}</strong>
-                    <small>{selectedWindow.lastDomain ?? "暂无"}</small>
-                  </div>
-                </div>
-                <RhythmBars values={selectedSummary.activeHourBuckets} />
-              </div>
-            ) : (
-              <div className="empty-state">选择左侧日期后查看当天细节。</div>
-            )}
-          </SectionCard>
-        </div>
-
-        <div className="dashboard-detail-grid">
-          <SectionCard title="时间轴回放" subtitle="按当天站点首次出现时间排序" className="dashboard-fixed-card">
-            {selectedTimeline.length ? (
-              <div className="timeline-list">
-                {selectedTimeline.map((entry) => (
-                  <div className="timeline-row" key={`${entry.dateKey}-${entry.domain}-${entry.startAt}`}>
-                    <time>{formatTime(entry.startAt)}</time>
-                    <div className="timeline-dot" />
-                    <button
-                      type="button"
-                      className="timeline-content timeline-button"
-                      onClick={() => void openSite(entry.domain, range)}
-                    >
-                      <div>
-                        <strong>{entry.domain}</strong>
-                        <small>
-                          {formatTime(entry.startAt)} - {formatTime(entry.endAt)} / {entry.activeVisitCount} 次活跃
-                        </small>
-                      </div>
-                      <b>{formatDuration(entry.totalActiveMs)}</b>
-                      <span className="timeline-meter">
-                        <i style={{ width: `${timelineWidth(entry, maxTimelineMs)}%` }} />
-                      </span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">当天暂无可回放的站点时间轴。</div>
-            )}
-          </SectionCard>
-
-          <SectionCard title="当天站点明细" subtitle="按停留时长排序" className="dashboard-fixed-card">
-            {selectedDomainRows.length ? (
-              <div className="site-detail-table">
-                {selectedDomainRows.map((row, index) => (
-                  <button
-                    type="button"
-                    className="site-detail-row site-detail-button"
-                    key={row.id}
-                    onClick={() => void openSite(row.domain, range)}
-                  >
-                    <span>#{index + 1}</span>
-                    <strong>{row.domain}</strong>
-                    <small>
-                      {row.activeVisitCount} 次活跃 / {row.openVisitCount} 次打开
-                    </small>
-                    <b>{formatDuration(row.totalActiveMs)}</b>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">当天暂无站点明细。</div>
-            )}
-          </SectionCard>
-        </div>
-
-        <div className="dashboard-chart-grid">
-          <SectionCard title="历史趋势" subtitle="按天聚合的活跃时长" className="dashboard-chart-card">
-            {payload.charts.dailySeries.length ? (
-              <Sparkline values={payload.charts.dailySeries.map((item) => item.value)} />
-            ) : (
-              <div className="empty-state">暂无趋势数据。</div>
-            )}
-          </SectionCard>
-
-          <SectionCard title="全历史站点排行" subtitle="当前范围内 Top 10" className="dashboard-chart-card">
-            {payload.charts.topDomains.length ? (
-              <RankBars
-                data={payload.charts.topDomains}
-                limit={10}
-                selectedDomain={selectedDomainRows[0]?.domain}
-                onSelect={(domain) => void openSite(domain, range)}
-              />
-            ) : (
-              <div className="empty-state">暂无站点排行。</div>
-            )}
-          </SectionCard>
-
-          <SectionCard
-            title="活跃热力"
-            subtitle="最近 14 个有记录日期的小时分布"
-            className="dashboard-full-width dashboard-heatmap-card"
-          >
-            {payload.charts.heatmapDays.length ? (
-              <HeatmapMatrix rows={payload.charts.heatmapDays} />
-            ) : (
-              <div className="empty-state">暂无热力数据。</div>
-            )}
-          </SectionCard>
-        </div>
-      </div>
-    </PageShell>
+          </div>
+        </article>
+      ) : null}
+    </div>
   );
 }
 
